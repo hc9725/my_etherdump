@@ -1,0 +1,125 @@
+
+#define LONG_SNAPLEN    65535
+#define DEFAULT_SNAPLEN  128
+int ewx_user_data_pcap_open(int argc, char *argv[])
+{
+    char *dev= NULL;  
+    bpf_u_int32 netp;
+    bpf_u_int32 maskp;
+
+    g_pcap_errbuf = (char *)malloc(PCAP_ERRBUF_SIZE);
+    if (NULL == g_pcap_errbuf){
+        ewx_log(EWX_LOG_INFO,"Session:malloc error buffer error!\n");    
+        return -1;
+    }
+    
+    dev = argv[1];
+    
+    if(NULL == dev)
+    {
+        ewx_log(EWX_LOG_INFO,"can't find dev!\n");
+        return -1;
+    }
+        
+    if(-1 == (pcap_lookupnet(dev, &netp, &maskp, g_pcap_errbuf)))
+    {
+        ewx_log(EWX_LOG_ERROR,"Error in look up net!\n");
+        return -1;
+    }
+     
+#if 0
+    g_pcap_handle = pcap_open_offline( cap_file, g_pcap_errbuf );
+    if ( g_pcap_handle == NULL ) {
+        fprintf( stderr, "Couldn't open file %s: %s\n", cap_file, g_pcap_errbuf );
+        return -1;
+    }
+    pcapPtr = pcap_open_live(tmpDev,
+                                            (num_plugins_enabled > 0) ? LONG_SNAPLEN : DEFAULT_SNAPLEN,
+                                            promisc_mode /* promiscuous mode */,
+                                            1000 /* ms */,
+                                            ebuf);
+#endif
+
+    pthread_mutex_lock(&g_pcap_mutex);     
+    g_pcap_handle = pcap_open_live(dev, LONG_SNAPLEN, 1, 100, g_pcap_errbuf);
+    if(NULL == g_pcap_handle)
+    {
+        ewx_log(EWX_LOG_ERROR,"Error open device: %s\n",g_pcap_errbuf);
+        pthread_mutex_unlock(&g_pcap_mutex);            
+        return -1;
+    }
+    pthread_mutex_unlock(&g_pcap_mutex);     
+    
+    if(pcap_datalink(g_pcap_handle) == DLT_EN10MB)
+    {
+        ewx_log(EWX_LOG_DEBUG,"10 MB internet!\n");
+    }
+
+    ewx_log(EWX_LOG_INFO,"Open DEV: %s\n", dev);
+    
+    return 0;
+}
+
+
+int ewx_user_data_pcap( u_char**packet, int *len)
+{
+    static uint64_t pcap_len = 0;
+    static uint64_t pcap_time_st = 0;
+    uint64_t pcap_time_end = ((uint64_t)(time(NULL)));    
+    struct pcap_pkthdr header;  
+
+    *len = 0;
+    if (NULL == g_pcap_handle){
+        //sleep(1);
+        return -1;
+    }
+    
+    *packet = (u_char*)pcap_next(g_pcap_handle, &header);
+
+   #if (SESSION_DEBUG_LEVEL >= 3)
+    ewx_log(EWX_LOG_DEBUG,"The grab time is: %s", ctime((const time_t*)&header.ts.tv_sec));
+    ewx_log(EWX_LOG_DEBUG,"The grab length of packet is: %d\n", header.caplen);
+    ewx_log(EWX_LOG_DEBUG,"The length of packet is: %d\n", header.len);
+   #endif
+
+   *len = (int)header.caplen;
+    pcap_len += ((uint64_t)(0xFFFF&(header.len)));
+    if ((pcap_time_end - pcap_time_st) >=1){
+        g_session_info->bits_rx = (pcap_len/(pcap_time_end - pcap_time_st));  
+        pcap_time_st = pcap_time_end;
+        pcap_len = 0;
+    }
+    if (NULL == *packet)
+        return -1;
+    
+   #if (SESSION_DEBUG_LEVEL >= 2)
+    ewx_data_prirnt((void *)*packet,80);
+   #endif
+
+    return 0;
+}
+
+
+int ewx_user_data_pcap_close(void)
+{
+    struct pcap_stat stat;  
+
+    if(NULL == g_pcap_handle)
+    {
+        ewx_log(EWX_LOG_ERROR,"pcap open live(): %s\n",g_pcap_errbuf);
+        return -1;
+    }
+
+     if( NULL != g_pcap_handle){
+        pcap_stats(g_pcap_handle, &stat);
+        printf("Session:reces: %d, drops: %d\n", stat.ps_recv, stat.ps_drop);  
+    }
+     
+    pcap_close(g_pcap_handle);
+    
+    if (NULL != g_pcap_errbuf){
+        free(g_pcap_errbuf);        
+    }
+    
+    return 0;    
+}
